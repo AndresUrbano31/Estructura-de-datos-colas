@@ -1,25 +1,19 @@
 /**
  * ============================================================
- *  CASO DE ESTUDIO: Cola de Renderizado de Previsualizaciones
- *  en un Editor de Video Online (estilo CapCut / Canva Video)
+ *  CASO DE ESTUDIO: Cola de Impresión en el Salón de Clases
  * ============================================================
  *
- *  CONTEXTO REAL:
- *  Cuando editas un video en el navegador y aplicas un filtro,
- *  recortas un clip o ajustas el brillo, la plataforma no
- *  re-renderiza todos los segmentos al mismo tiempo: los encola
- *  y los procesa uno a uno (o con concurrencia limitada) para
- *  no saturar el hilo principal ni la GPU virtual del browser.
+ *  CONTEXTO:
+ *  8 estudiantes comparten una sola impresora en el aula.
+ *  Todos envían sus documentos a imprimir casi al mismo tiempo.
+ *  El sistema los atiende en orden de llegada (FIFO).
+ *  El profesor puede insertar su trabajo con prioridad alta.
  *
- *  Este sistema simula exactamente esa cola de trabajos de
- *  renderizado usando el patrón FIFO con soporte para:
- *    - Prioridad de segmentos (el segmento visible primero)
- *    - Cancelación de trabajos obsoletos (el usuario cambió el
- *      filtro antes de que terminara el render anterior)
- *    - Métricas en tiempo real (trabajos pendientes, procesados,
- *      tiempo promedio de render)
- *
- *  
+ *  CONCEPTOS DE POO APLICADOS:
+ *  - Encapsulamiento : atributos private en Node, Queue y PrintQueue
+ *  - Abstracción     : el usuario solo llama enqueue() y procesarCola()
+ *  - Composición     : PrintQueue contiene una Queue<PrintJob>
+ *  - Genericidad     : Queue<T> reutilizable con cualquier tipo
  * ============================================================
  */
 
@@ -27,294 +21,274 @@
 //  TIPOS
 // ─────────────────────────────────────────────────────────────
 
-/** Tipos de operación que puede tener un segmento de video */
-type EffectType =
-  | "color_grade"   // Corrección de color
-  | "blur"          // Desenfoque
-  | "trim"          // Recorte de duración
-  | "speed_change"  // Cambio de velocidad
-  | "transition";   // Transición entre clips
+/** Nivel de prioridad del trabajo */
+type Prioridad = "alta" | "normal";
 
-/** Prioridad del trabajo: el segmento en pantalla va primero */
-type Priority = "high" | "normal" | "low";
+/** Estado del trabajo en el spooler */
+type EstadoTrabajo = "en_espera" | "imprimiendo" | "completado";
 
-/** Estado del trabajo en la cola */
-type JobStatus = "pending" | "processing" | "done" | "cancelled";
-
-/** Representa un trabajo de renderizado de un segmento de video */
-interface RenderJob {
-  id: string;               // Identificador único
-  segmentId: string;        // ID del segmento en el timeline
-  effect: EffectType;       // Qué operación hay que aplicar
-  priority: Priority;       // Urgencia del render
-  createdAt: number;        // Timestamp de creación (ms)
-  status: JobStatus;        // Estado actual
-  durationMs?: number;      // Cuánto tardó en procesarse (una vez terminado)
+/** Representa un documento enviado a imprimir */
+interface TrabajoImpresion {
+  id: string;               // Identificador único del trabajo
+  estudiante: string;       // Nombre del estudiante
+  documento: string;        // Nombre del archivo
+  paginas: number;          // Cantidad de páginas
+  prioridad: Prioridad;     // Normal o alta (profesor)
+  horaEnvio: string;        // Hora en que se envió a imprimir
+  estado: EstadoTrabajo;    // Estado actual del trabajo
+  tiempoImpresionMs?: number; // Cuánto tardó en imprimirse
 }
 
 /** Parámetros para crear un nuevo trabajo */
-type CreateJobParams = Pick<RenderJob, "segmentId" | "effect" | "priority">;
+type NuevoTrabajo = Omit<TrabajoImpresion, "id" | "estado" | "tiempoImpresionMs">;
 
-/** Estadísticas de la cola */
-interface QueueStats {
-  pending: number;
-  processing: number;
-  done: number;
-  cancelled: number;
-  averageRenderTimeMs: number;
+/** Estadísticas finales de la sesión */
+interface EstadisticasSesion {
+  totalTrabajos: number;
+  completados: number;
+  paginasTotales: number;
+  tiempoPromedioMs: number;
+  ordenDeAtencion: string[];
 }
 
 // ─────────────────────────────────────────────────────────────
-//  NODO DE LA LISTA ENLAZADA (estructura interna de la cola)
-//  → Los nodos permiten O(1) en enqueue y dequeue sin usar
-//    array.shift(), que es O(n).
+//  NODO — Unidad básica de la lista enlazada
 // ─────────────────────────────────────────────────────────────
 
-class Node<T> {
-  value: T;
-  next: Node<T> | null = null;
+class Nodo<T> {
+  valor: T;
+  siguiente: Nodo<T> | null = null;
 
-  constructor(value: T) {
-    this.value = value;
+  constructor(valor: T) {
+    this.valor = valor;
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+//  COLA GENÉRICA (FIFO) con soporte de prioridad
+//  - enqueue()        O(1) — agrega al final
+//  - enqueueFrente()  O(1) — agrega al frente (prioridad alta)
+//  - dequeue()        O(1) — saca del frente
+//  - peek()           O(1) — consulta sin sacar
+// ─────────────────────────────────────────────────────────────
 
+class Cola<T> {
+  private cabeza: Nodo<T> | null = null;
+  private cola: Nodo<T> | null = null;
+  private _tamanio: number = 0;
 
-class Queue<T> {
-  private head: Node<T> | null = null;
-  private tail: Node<T> | null = null;
-  private _size: number = 0;
-
-  /** Agrega un elemento al final de la cola — O(1) */
-  enqueue(value: T): void {
-    const node = new Node(value);
-    if (this.tail) {
-      this.tail.next = node;
+  /** Agrega un elemento al FINAL — orden normal FIFO */
+  encolar(valor: T): void {
+    const nodo = new Nodo(valor);
+    if (this.cola) {
+      this.cola.siguiente = nodo;
     }
-    this.tail = node;
-    if (!this.head) {
-      this.head = node;
+    this.cola = nodo;
+    if (!this.cabeza) {
+      this.cabeza = nodo;
     }
-    this._size++;
+    this._tamanio++;
   }
 
-  /** Elimina y retorna el elemento del frente — O(1) */
-  dequeue(): T | undefined {
-    if (!this.head) return undefined;
-    const value = this.head.value;
-    this.head = this.head.next;
-    if (!this.head) this.tail = null;
-    this._size--;
-    return value;
+  /**
+   * Agrega un elemento al FRENTE — para trabajos de alta prioridad.
+   * El trabajo se inserta justo después del que está imprimiéndose
+   * actualmente (no se puede interrumpir el trabajo en curso).
+   */
+  encolarAlFrente(valor: T): void {
+    const nodo = new Nodo(valor);
+    nodo.siguiente = this.cabeza;
+    this.cabeza = nodo;
+    if (!this.cola) {
+      this.cola = nodo;
+    }
+    this._tamanio++;
   }
 
-  /** Consulta el frente sin eliminar — O(1) */
-  peek(): T | undefined {
-    return this.head?.value;
+  /** Saca y retorna el elemento del FRENTE — O(1) */
+  desencolar(): T | undefined {
+    if (!this.cabeza) return undefined;
+    const valor = this.cabeza.valor;
+    this.cabeza = this.cabeza.siguiente;
+    if (!this.cabeza) this.cola = null;
+    this._tamanio--;
+    return valor;
   }
 
-  get size(): number {
-    return this._size;
+  /** Consulta el frente sin sacarlo — O(1) */
+  verPrimero(): T | undefined {
+    return this.cabeza?.valor;
   }
 
-  get isEmpty(): boolean {
-    return this._size === 0;
+  get tamanio(): number {
+    return this._tamanio;
   }
 
-  /** Itera sobre todos los elementos sin modificar la cola */
-  [Symbol.iterator](): Iterator<T> {
-    let current = this.head;
-    return {
-      next(): IteratorResult<T> {
-        if (current) {
-          const value = current.value;
-          current = current.next;
-          return { value, done: false };
-        }
-        return { value: undefined as unknown as T, done: true };
-      },
-    };
+  get estaVacia(): boolean {
+    return this._tamanio === 0;
   }
 
-  /** Convierte la cola a array para inspección */
-  toArray(): T[] {
-    return [...this];
+  /** Convierte la cola a array para mostrar en consola */
+  aArreglo(): T[] {
+    const resultado: T[] = [];
+    let actual = this.cabeza;
+    while (actual) {
+      resultado.push(actual.valor);
+      actual = actual.siguiente;
+    }
+    return resultado;
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+//  SPOOLER DE IMPRESIÓN — Caso de estudio principal
+// ─────────────────────────────────────────────────────────────
 
-class VideoRenderQueue {
-  /** Cola interna de trabajos pendientes (FIFO) */
-  private queue: Queue<RenderJob> = new Queue();
+class SpoolerImpresion {
+  /** Cola interna de trabajos pendientes */
+  private cola: Cola<TrabajoImpresion> = new Cola();
 
-  /** Historial completo para estadísticas */
-  private history: RenderJob[] = [];
-
-  /** Mapa de trabajos cancelados (por segmentId) para lookup rápido */
-  private cancelledSegments: Set<string> = new Set();
-
-  /** ¿Hay un worker procesando actualmente? */
-  private isProcessing: boolean = false;
+  /** Historial de todos los trabajos procesados */
+  private historial: TrabajoImpresion[] = [];
 
   /** Contador para generar IDs únicos */
-  private jobCounter: number = 0;
+  private contadorId: number = 0;
+
+  /** Velocidad de impresión: ms por página */
+  private readonly MS_POR_PAGINA = 500;
 
   /**
-   * Encola un nuevo trabajo de renderizado.
-   *
-   * Si el segmento ya tenía un trabajo pendiente (por ejemplo,
-   * el usuario cambió el filtro dos veces rápido), el trabajo
-   * anterior se marca como CANCELADO y sólo se procesa el nuevo.
-   * Esto evita renders innecesarios, como hace CapCut internamente.
+   * Recibe un nuevo trabajo de impresión.
+   * Si tiene prioridad ALTA (ej: el profesor), se inserta
+   * al frente de la cola sin interrumpir el trabajo actual.
+   * Si tiene prioridad NORMAL, va al final de la cola.
    */
-  enqueue(params: CreateJobParams): RenderJob {
-    // Cancelar trabajos previos del mismo segmento (aún pendientes)
-    this.cancelPendingForSegment(params.segmentId);
-
-    const job: RenderJob = {
-      id: `job_${++this.jobCounter}`,
-      segmentId: params.segmentId,
-      effect: params.effect,
-      priority: params.priority,
-      createdAt: Date.now(),
-      status: "pending",
+  enviarAImprimir(datos: NuevoTrabajo): TrabajoImpresion {
+    const trabajo: TrabajoImpresion = {
+      ...datos,
+      id: `DOC-${String(++this.contadorId).padStart(3, "0")}`,
+      estado: "en_espera",
     };
 
-    this.queue.enqueue(job);
-    this.history.push(job);
-
-    console.log(
-      `[ENQUEUE] ${job.id} | segmento: ${job.segmentId} | efecto: ${job.effect} | prioridad: ${job.priority}`
-    );
-
-    // Iniciar procesamiento si no hay uno activo
-    if (!this.isProcessing) {
-      this.processNext();
+    if (trabajo.prioridad === "alta") {
+      this.cola.encolarAlFrente(trabajo);
+      console.log(
+        `🔴 [PRIORIDAD] ${trabajo.estudiante} → "${trabajo.documento}" ` +
+        `(${trabajo.paginas} pág.) insertado al FRENTE de la cola`
+      );
+    } else {
+      this.cola.encolar(trabajo);
+      console.log(
+        `📄 [RECIBIDO]  ${trabajo.estudiante} → "${trabajo.documento}" ` +
+        `(${trabajo.paginas} pág.) agregado a la cola | posición: ${this.cola.tamanio}`
+      );
     }
 
-    return job;
+    this.historial.push(trabajo);
+    return trabajo;
   }
 
   /**
-   * Cancela todos los trabajos pendientes de un segmento específico.
-   * Se usa cuando el usuario modifica un segmento antes de que
-   * terminara su render previo.
+   * Procesa todos los trabajos en la cola uno a uno.
+   * Simula el tiempo de impresión según la cantidad de páginas.
    */
-  cancelPendingForSegment(segmentId: string): void {
-    this.cancelledSegments.add(segmentId);
+  async procesarCola(): Promise<void> {
+    console.log("\n🖨️  ══════════════════════════════════════════════");
+    console.log("    IMPRESORA LISTA — Comenzando a procesar cola");
+    console.log("    ══════════════════════════════════════════════\n");
 
-    // Marcar en el historial los trabajos pendientes de ese segmento
-    for (const job of this.history) {
-      if (job.segmentId === segmentId && job.status === "pending") {
-        job.status = "cancelled";
-        console.log(
-          `[CANCEL]  ${job.id} cancelado (nuevo cambio en segmento ${segmentId})`
-        );
-      }
+    while (!this.cola.estaVacia) {
+      const trabajo = this.cola.desencolar()!;
+
+      // Mostrar quién sigue en la fila
+      this.mostrarColaActual();
+
+      // Cambiar estado a imprimiendo
+      trabajo.estado = "imprimiendo";
+      console.log(
+        `\n⚙️  [IMPRIMIENDO] ${trabajo.id} | ${trabajo.estudiante} | ` +
+        `"${trabajo.documento}" | ${trabajo.paginas} página(s)...`
+      );
+
+      // Simular tiempo de impresión (500ms por página)
+      const tiempoTotal = trabajo.paginas * this.MS_POR_PAGINA;
+      await esperar(tiempoTotal);
+
+      // Trabajo completado
+      trabajo.estado = "completado";
+      trabajo.tiempoImpresionMs = tiempoTotal;
+
+      console.log(
+        `✅ [LISTO]       ${trabajo.id} | ${trabajo.estudiante} recoge ` +
+        `su impresión (${tiempoTotal / 1000}s) ✓`
+      );
     }
+
+    console.log("\n🏁 Cola vacía. Todos los documentos fueron impresos.\n");
   }
 
   /**
-   * Procesador interno: toma el siguiente trabajo de la cola,
-   * lo ejecuta y llama recursivamente al siguiente.
-   *
-   * Simula el worker de renderizado con una espera asíncrona
-   * proporcional al tipo de efecto.
+   * Muestra visualmente quién está esperando en la cola.
    */
-  private async processNext(): Promise<void> {
-    if (this.queue.isEmpty) {
-      this.isProcessing = false;
-      console.log(`[QUEUE]   Cola vacía. Worker en reposo.\n`);
+  private mostrarColaActual(): void {
+    const enEspera = this.cola.aArreglo();
+    if (enEspera.length === 0) {
+      console.log("   📭 Cola: vacía (este es el último trabajo)");
       return;
     }
-
-    this.isProcessing = true;
-    const job = this.queue.dequeue()!;
-
-    // Si el trabajo fue cancelado mientras esperaba, saltar al siguiente
-    if (job.status === "cancelled") {
-      console.log(`[SKIP]    ${job.id} omitido (cancelado previamente)`);
-      return this.processNext();
-    }
-
-    job.status = "processing";
-    console.log(`[START]   ${job.id} → aplicando "${job.effect}" en ${job.segmentId}...`);
-
-    const startTime = Date.now();
-
-    // Simular tiempo de render según el tipo de efecto
-    const renderTime = this.estimateRenderTime(job.effect);
-    await sleep(renderTime);
-
-    job.status = "done";
-    job.durationMs = Date.now() - startTime;
-
-    console.log(
-      `[DONE]    ${job.id} completado en ${job.durationMs}ms ✓`
-    );
-
-    // Procesar el siguiente trabajo
-    this.processNext();
+    const nombres = enEspera.map((t, i) => `${i + 1}.${t.estudiante}`).join("  →  ");
+    console.log(`   📋 En espera: ${nombres}`);
   }
 
   /**
-   * Estima el tiempo de render simulado según el tipo de efecto.
-   * En una implementación real, esto dependería de la GPU y
-   * la duración del segmento.
+   * Retorna las estadísticas de la sesión de impresión.
    */
-  private estimateRenderTime(effect: EffectType): number {
-    const times: Record<EffectType, number> = {
-      trim: 100,           // Rápido: solo reindexar frames
-      speed_change: 200,   // Medio: interpolar frames
-      color_grade: 350,    // Lento: procesar píxeles
-      blur: 300,           // Lento: convolución
-      transition: 250,     // Medio: combinar dos clips
-    };
-    return times[effect];
-  }
-
-  /**
-   * Devuelve estadísticas actuales de la cola.
-   */
-  getStats(): QueueStats {
-    const counts = { pending: 0, processing: 0, done: 0, cancelled: 0 };
-    const renderTimes: number[] = [];
-
-    for (const job of this.history) {
-      counts[job.status]++;
-      if (job.status === "done" && job.durationMs !== undefined) {
-        renderTimes.push(job.durationMs);
-      }
-    }
-
-    const averageRenderTimeMs =
-      renderTimes.length > 0
-        ? Math.round(renderTimes.reduce((a, b) => a + b, 0) / renderTimes.length)
+  obtenerEstadisticas(): EstadisticasSesion {
+    const completados = this.historial.filter(t => t.estado === "completado");
+    const paginasTotales = this.historial.reduce((acc, t) => acc + t.paginas, 0);
+    const tiempos = completados
+      .filter(t => t.tiempoImpresionMs !== undefined)
+      .map(t => t.tiempoImpresionMs!);
+    const tiempoPromedio =
+      tiempos.length > 0
+        ? Math.round(tiempos.reduce((a, b) => a + b, 0) / tiempos.length)
         : 0;
 
     return {
-      ...counts,
-      averageRenderTimeMs,
+      totalTrabajos: this.historial.length,
+      completados: completados.length,
+      paginasTotales,
+      tiempoPromedioMs: tiempoPromedio,
+      ordenDeAtencion: completados.map(t => t.estudiante),
     };
   }
 
   /**
-   * Muestra el estado de todos los trabajos en el historial.
+   * Muestra el historial completo de trabajos.
    */
-  printHistory(): void {
-    console.log("\n═══════════════ HISTORIAL DE TRABAJOS ═══════════════");
-    for (const job of this.history) {
-      const duration = job.durationMs ? `${job.durationMs}ms` : "—";
-      const statusIcon =
-        job.status === "done" ? "✓" :
-        job.status === "cancelled" ? "✗" :
-        job.status === "processing" ? "⟳" : "…";
+  mostrarHistorial(): void {
+    console.log("═══════════════════════════════════════════════════════════");
+    console.log("                  HISTORIAL DE IMPRESIÓN                   ");
+    console.log("═══════════════════════════════════════════════════════════");
+    console.log(
+      " #   | Estudiante       | Documento                | Pág | Tiempo  | Estado"
+    );
+    console.log("─────────────────────────────────────────────────────────────");
+
+    for (const trabajo of this.historial) {
+      const icono =
+        trabajo.estado === "completado" ? "✅" :
+        trabajo.estado === "imprimiendo" ? "⚙️ " : "⏳";
+      const tiempo = trabajo.tiempoImpresionMs
+        ? `${trabajo.tiempoImpresionMs / 1000}s`
+        : "—";
       console.log(
-        `  ${statusIcon} ${job.id.padEnd(8)} | ${job.segmentId.padEnd(10)} | ${job.effect.padEnd(14)} | ${job.status.padEnd(10)} | ${duration}`
+        ` ${trabajo.id} | ${trabajo.estudiante.padEnd(16)} | ` +
+        `${trabajo.documento.padEnd(24)} | ${String(trabajo.paginas).padStart(3)} | ` +
+        `${tiempo.padEnd(7)} | ${icono} ${trabajo.estado}`
       );
     }
-    console.log("═════════════════════════════════════════════════════\n");
+    console.log("═══════════════════════════════════════════════════════════\n");
   }
 }
 
@@ -322,55 +296,118 @@ class VideoRenderQueue {
 //  UTILIDAD
 // ─────────────────────────────────────────────────────────────
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function esperar(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ─────────────────────────────────────────────────────────────
-//  SIMULACIÓN — Escenario realista de uso
+//  SIMULACIÓN — Escenario del salón de clases
 // ─────────────────────────────────────────────────────────────
 
-async function runSimulation(): Promise<void> {
-  console.log("╔════════════════════════════════════════════════════╗");
-  console.log("║  SIMULADOR DE COLA DE RENDERIZADO — Editor de Video ║");
-  console.log("╚════════════════════════════════════════════════════╝\n");
+async function simularSalonDeClases(): Promise<void> {
+  console.log("╔══════════════════════════════════════════════════════════╗");
+  console.log("║     COLA DE IMPRESIÓN — Salón de Clases                  ║");
+  console.log("║     8 estudiantes · 1 impresora · Día de entrega         ║");
+  console.log("╚══════════════════════════════════════════════════════════╝\n");
 
-  const renderQueue = new VideoRenderQueue();
+  const spooler = new SpoolerImpresion();
 
-  // ── Acción 1: El usuario aplica efectos a 3 segmentos distintos
-  console.log("► El usuario aplica color_grade al segmento de apertura (visible → high)");
-  renderQueue.enqueue({ segmentId: "seg_001", effect: "color_grade", priority: "high" });
+  // ── Los 8 estudiantes envían sus documentos casi al mismo tiempo
+  console.log("📢 El profesor anuncia: '15 minutos para entregar impreso'\n");
+  console.log("── Estudiantes enviando documentos a imprimir... ──────────\n");
 
-  console.log("► El usuario aplica blur al segmento de fondo (no visible → normal)");
-  renderQueue.enqueue({ segmentId: "seg_002", effect: "blur", priority: "normal" });
+  spooler.enviarAImprimir({
+    estudiante: "Valentina",
+    documento: "Taller_POO.pdf",
+    paginas: 3,
+    prioridad: "normal",
+    horaEnvio: "08:01",
+  });
 
-  console.log("► El usuario añade una transición entre clips");
-  renderQueue.enqueue({ segmentId: "seg_003", effect: "transition", priority: "normal" });
+  spooler.enviarAImprimir({
+    estudiante: "Camilo",
+    documento: "Informe_BD.pdf",
+    paginas: 5,
+    prioridad: "normal",
+    horaEnvio: "08:01",
+  });
 
-  // ── Acción 2: Antes de que termine seg_002, el usuario cambia el efecto
-  await sleep(150); // Después de que empiece el render de seg_001
+  spooler.enviarAImprimir({
+    estudiante: "Lucía",
+    documento: "Diagrama_UML.pdf",
+    paginas: 1,
+    prioridad: "normal",
+    horaEnvio: "08:02",
+  });
 
-  console.log("\n► El usuario cambia de idea: quiere speed_change en seg_002 (sobrescribe blur)");
-  renderQueue.enqueue({ segmentId: "seg_002", effect: "speed_change", priority: "normal" });
+  spooler.enviarAImprimir({
+    estudiante: "Andrés",
+    documento: "Proyecto_Final.pdf",
+    paginas: 8,
+    prioridad: "normal",
+    horaEnvio: "08:02",
+  });
 
-  // ── Acción 3: Agrega un recorte de baja prioridad
-  console.log("► El usuario recorta seg_004 (no visible → low)");
-  renderQueue.enqueue({ segmentId: "seg_004", effect: "trim", priority: "low" });
+  spooler.enviarAImprimir({
+    estudiante: "Sara",
+    documento: "Resumen_Redes.pdf",
+    paginas: 2,
+    prioridad: "normal",
+    horaEnvio: "08:03",
+  });
 
-  // ── Esperar a que todos los renders terminen
-  await sleep(2000);
+  spooler.enviarAImprimir({
+    estudiante: "Miguel",
+    documento: "Ejercicios_Algo.pdf",
+    paginas: 4,
+    prioridad: "normal",
+    horaEnvio: "08:03",
+  });
+
+  spooler.enviarAImprimir({
+    estudiante: "Daniela",
+    documento: "Casos_de_Uso.pdf",
+    paginas: 6,
+    prioridad: "normal",
+    horaEnvio: "08:04",
+  });
+
+  spooler.enviarAImprimir({
+    estudiante: "Felipe",
+    documento: "Mapa_Conceptual.pdf",
+    paginas: 2,
+    prioridad: "normal",
+    horaEnvio: "08:04",
+  });
+
+  // ── El profesor necesita imprimir con prioridad
+  console.log("\n── El profesor interviene con prioridad alta ───────────────\n");
+
+  spooler.enviarAImprimir({
+    estudiante: "Profesor García",
+    documento: "Lista_Calificaciones.pdf",
+    paginas: 1,
+    prioridad: "alta",
+    horaEnvio: "08:05",
+  });
+
+  // ── Procesar toda la cola
+  await spooler.procesarCola();
 
   // ── Mostrar resultados
-  renderQueue.printHistory();
+  spooler.mostrarHistorial();
 
-  const stats = renderQueue.getStats();
-  console.log("════════════════════ ESTADÍSTICAS ════════════════════");
-  console.log(`  Trabajos pendientes:    ${stats.pending}`);
-  console.log(`  En procesamiento:       ${stats.processing}`);
-  console.log(`  Completados:            ${stats.done}`);
-  console.log(`  Cancelados:             ${stats.cancelled}`);
-  console.log(`  Tiempo promedio render: ${stats.averageRenderTimeMs}ms`);
-  console.log("═══════════════════════════════════════════════════════\n");
+  const stats = spooler.obtenerEstadisticas();
+  console.log("════════════════════ ESTADÍSTICAS DE LA SESIÓN ════════════");
+  console.log(`  Total de trabajos enviados : ${stats.totalTrabajos}`);
+  console.log(`  Documentos completados     : ${stats.completados}`);
+  console.log(`  Total de páginas impresas  : ${stats.paginasTotales}`);
+  console.log(`  Tiempo promedio por trabajo: ${stats.tiempoPromedioMs / 1000}s`);
+  console.log(`\n  Orden en que recogieron su impresión:`);
+  stats.ordenDeAtencion.forEach((nombre, i) => {
+    console.log(`    ${i + 1}. ${nombre}`);
+  });
+  console.log("════════════════════════════════════════════════════════════\n");
 }
 
-runSimulation();
+simularSalonDeClases();
