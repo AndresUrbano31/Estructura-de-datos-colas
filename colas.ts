@@ -19,10 +19,7 @@
  *    - Métricas en tiempo real (trabajos pendientes, procesados,
  *      tiempo promedio de render)
  *
- *  INSPIRACIÓN DE GITHUB:
- *  - github.com/keshavsaharia/ts-queue   → PromiseQueue pattern
- *  - github.com/karakeep-app/liteque     → job runner con retries
- *  - github.com/typescript-package/queue → TaskQueue con concurrencia
+ *  
  * ============================================================
  */
 
@@ -69,7 +66,6 @@ interface QueueStats {
 
 // ─────────────────────────────────────────────────────────────
 //  NODO DE LA LISTA ENLAZADA (estructura interna de la cola)
-//  Inspirado en: github.com/sfkiwi/queue-typescript
 //  → Los nodos permiten O(1) en enqueue y dequeue sin usar
 //    array.shift(), que es O(n).
 // ─────────────────────────────────────────────────────────────
@@ -83,11 +79,7 @@ class Node<T> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-//  COLA GENÉRICA (FIFO) — O(1) en enqueue y dequeue
-//  Igual a la implementación de egghead.io pero con LinkedList
-//  en vez de Map para mayor legibilidad pedagógica.
-// ─────────────────────────────────────────────────────────────
+
 
 class Queue<T> {
   private head: Node<T> | null = null;
