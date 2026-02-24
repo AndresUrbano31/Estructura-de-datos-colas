@@ -1,291 +1,291 @@
 /**
  * ============================================================
- *  CASO DE ESTUDIO: Cola de Impresión en el Salón de Clases
+ *  CASE STUDY: Classroom Print Queue
  * ============================================================
  *
- *  CONTEXTO:
- *  8 estudiantes comparten una sola impresora en el aula.
- *  Todos envían sus documentos a imprimir casi al mismo tiempo.
- *  El sistema los atiende en orden de llegada (FIFO).
- *  El profesor puede insertar su trabajo con prioridad alta.
+ *  CONTEXT:
+ *  8 students share a single printer in the classroom.
+ *  They all send their documents to print almost simultaneously.
+ *  The system serves them in order of arrival (FIFO).
+ *  The teacher can insert their job with high priority.
  *
- *  CONCEPTOS DE POO APLICADOS:
- *  - Encapsulamiento : atributos private en Node, Queue y PrintQueue
- *  - Abstracción     : el usuario solo llama enqueue() y procesarCola()
- *  - Composición     : PrintQueue contiene una Queue<PrintJob>
- *  - Genericidad     : Queue<T> reutilizable con cualquier tipo
+ *  OOP CONCEPTS APPLIED:
+ *  - Encapsulation : private attributes in Node, Queue and PrintQueue
+ *  - Abstraction   : the user only calls enqueue() and processQueue()
+ *  - Composition   : PrintQueue contains a Queue<PrintJob>
+ *  - Generics      : Queue<T> reusable with any type
  * ============================================================
  */
 
 // ─────────────────────────────────────────────────────────────
-//  TIPOS
+//  TYPES
 // ─────────────────────────────────────────────────────────────
 
-/** Nivel de prioridad del trabajo */
-type Prioridad = "alta" | "normal";
+/** Priority level of the job */
+type Priority = "high" | "normal";
 
-/** Estado del trabajo en el spooler */
-type EstadoTrabajo = "en_espera" | "imprimiendo" | "completado";
+/** Status of the job in the spooler */
+type JobStatus = "waiting" | "printing" | "completed";
 
-/** Representa un documento enviado a imprimir */
-interface TrabajoImpresion {
-  id: string;               // Identificador único del trabajo
-  estudiante: string;       // Nombre del estudiante
-  documento: string;        // Nombre del archivo
-  paginas: number;          // Cantidad de páginas
-  prioridad: Prioridad;     // Normal o alta (profesor)
-  horaEnvio: string;        // Hora en que se envió a imprimir
-  estado: EstadoTrabajo;    // Estado actual del trabajo
-  tiempoImpresionMs?: number; // Cuánto tardó en imprimirse
+/** Represents a document sent to print */
+interface PrintJob {
+  id: string;                 // Unique job identifier
+  student: string;            // Student name
+  document: string;           // File name
+  pages: number;              // Number of pages
+  priority: Priority;         // Normal or high (teacher)
+  sentAt: string;             // Time the job was sent
+  status: JobStatus;          // Current status
+  printTimeMs?: number;       // How long it took to print (once completed)
 }
 
-/** Parámetros para crear un nuevo trabajo */
-type NuevoTrabajo = Omit<TrabajoImpresion, "id" | "estado" | "tiempoImpresionMs">;
+/** Parameters to create a new job */
+type NewJob = Omit<PrintJob, "id" | "status" | "printTimeMs">;
 
-/** Estadísticas finales de la sesión */
-interface EstadisticasSesion {
-  totalTrabajos: number;
-  completados: number;
-  paginasTotales: number;
-  tiempoPromedioMs: number;
-  ordenDeAtencion: string[];
+/** Statistics for the print session */
+interface SessionStats {
+  totalJobs: number;
+  completed: number;
+  totalPages: number;
+  averageTimeMs: number;
+  attendanceOrder: string[];
 }
 
 // ─────────────────────────────────────────────────────────────
-//  NODO — Unidad básica de la lista enlazada
+//  NODE — Basic unit of the linked list
 // ─────────────────────────────────────────────────────────────
 
-class Nodo<T> {
-  valor: T;
-  siguiente: Nodo<T> | null = null;
+class Node<T> {
+  value: T;
+  next: Node<T> | null = null;
 
-  constructor(valor: T) {
-    this.valor = valor;
+  constructor(value: T) {
+    this.value = value;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  COLA GENÉRICA (FIFO) con soporte de prioridad
-//  - enqueue()        O(1) — agrega al final
-//  - enqueueFrente()  O(1) — agrega al frente (prioridad alta)
-//  - dequeue()        O(1) — saca del frente
-//  - peek()           O(1) — consulta sin sacar
+//  GENERIC QUEUE (FIFO) with priority support
+//  - enqueue()      O(1) — adds to the end
+//  - enqueueFront() O(1) — adds to the front (high priority)
+//  - dequeue()      O(1) — removes from the front
+//  - peek()         O(1) — reads front without removing
 // ─────────────────────────────────────────────────────────────
 
-class Cola<T> {
-  private cabeza: Nodo<T> | null = null;
-  private cola: Nodo<T> | null = null;
-  private _tamanio: number = 0;
+class Queue<T> {
+  private head: Node<T> | null = null;
+  private tail: Node<T> | null = null;
+  private _size: number = 0;
 
-  /** Agrega un elemento al FINAL — orden normal FIFO */
-  encolar(valor: T): void {
-    const nodo = new Nodo(valor);
-    if (this.cola) {
-      this.cola.siguiente = nodo;
+  /** Adds an element to the END — normal FIFO order */
+  enqueue(value: T): void {
+    const node = new Node(value);
+    if (this.tail) {
+      this.tail.next = node;
     }
-    this.cola = nodo;
-    if (!this.cabeza) {
-      this.cabeza = nodo;
+    this.tail = node;
+    if (!this.head) {
+      this.head = node;
     }
-    this._tamanio++;
+    this._size++;
   }
 
   /**
-   * Agrega un elemento al FRENTE — para trabajos de alta prioridad.
-   * El trabajo se inserta justo después del que está imprimiéndose
-   * actualmente (no se puede interrumpir el trabajo en curso).
+   * Adds an element to the FRONT — for high priority jobs.
+   * The job is inserted right after the one currently printing
+   * (the current job cannot be interrupted).
    */
-  encolarAlFrente(valor: T): void {
-    const nodo = new Nodo(valor);
-    nodo.siguiente = this.cabeza;
-    this.cabeza = nodo;
-    if (!this.cola) {
-      this.cola = nodo;
+  enqueueFront(value: T): void {
+    const node = new Node(value);
+    node.next = this.head;
+    this.head = node;
+    if (!this.tail) {
+      this.tail = node;
     }
-    this._tamanio++;
+    this._size++;
   }
 
-  /** Saca y retorna el elemento del FRENTE — O(1) */
-  desencolar(): T | undefined {
-    if (!this.cabeza) return undefined;
-    const valor = this.cabeza.valor;
-    this.cabeza = this.cabeza.siguiente;
-    if (!this.cabeza) this.cola = null;
-    this._tamanio--;
-    return valor;
+  /** Removes and returns the FRONT element — O(1) */
+  dequeue(): T | undefined {
+    if (!this.head) return undefined;
+    const value = this.head.value;
+    this.head = this.head.next;
+    if (!this.head) this.tail = null;
+    this._size--;
+    return value;
   }
 
-  /** Consulta el frente sin sacarlo — O(1) */
-  verPrimero(): T | undefined {
-    return this.cabeza?.valor;
+  /** Reads the front element without removing it — O(1) */
+  peek(): T | undefined {
+    return this.head?.value;
   }
 
-  get tamanio(): number {
-    return this._tamanio;
+  get size(): number {
+    return this._size;
   }
 
-  get estaVacia(): boolean {
-    return this._tamanio === 0;
+  get isEmpty(): boolean {
+    return this._size === 0;
   }
 
-  /** Convierte la cola a array para mostrar en consola */
-  aArreglo(): T[] {
-    const resultado: T[] = [];
-    let actual = this.cabeza;
-    while (actual) {
-      resultado.push(actual.valor);
-      actual = actual.siguiente;
+  /** Converts the queue to an array for display */
+  toArray(): T[] {
+    const result: T[] = [];
+    let current = this.head;
+    while (current) {
+      result.push(current.value);
+      current = current.next;
     }
-    return resultado;
+    return result;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  SPOOLER DE IMPRESIÓN — Caso de estudio principal
+//  PRINT SPOOLER — Main case study
 // ─────────────────────────────────────────────────────────────
 
-class SpoolerImpresion {
-  /** Cola interna de trabajos pendientes */
-  private cola: Cola<TrabajoImpresion> = new Cola();
+class PrintSpooler {
+  /** Internal queue of pending jobs */
+  private queue: Queue<PrintJob> = new Queue();
 
-  /** Historial de todos los trabajos procesados */
-  private historial: TrabajoImpresion[] = [];
+  /** Full history of all processed jobs */
+  private history: PrintJob[] = [];
 
-  /** Contador para generar IDs únicos */
-  private contadorId: number = 0;
+  /** Counter to generate unique IDs */
+  private jobCounter: number = 0;
 
-  /** Velocidad de impresión: ms por página */
-  private readonly MS_POR_PAGINA = 500;
+  /** Printing speed: ms per page */
+  private readonly MS_PER_PAGE = 500;
 
   /**
-   * Recibe un nuevo trabajo de impresión.
-   * Si tiene prioridad ALTA (ej: el profesor), se inserta
-   * al frente de la cola sin interrumpir el trabajo actual.
-   * Si tiene prioridad NORMAL, va al final de la cola.
+   * Receives a new print job.
+   * If it has HIGH priority (e.g. the teacher), it is inserted
+   * at the front of the queue without interrupting the current job.
+   * If it has NORMAL priority, it goes to the end of the queue.
    */
-  enviarAImprimir(datos: NuevoTrabajo): TrabajoImpresion {
-    const trabajo: TrabajoImpresion = {
-      ...datos,
-      id: `DOC-${String(++this.contadorId).padStart(3, "0")}`,
-      estado: "en_espera",
+  sendToPrint(data: NewJob): PrintJob {
+    const job: PrintJob = {
+      ...data,
+      id: `DOC-${String(++this.jobCounter).padStart(3, "0")}`,
+      status: "waiting",
     };
 
-    if (trabajo.prioridad === "alta") {
-      this.cola.encolarAlFrente(trabajo);
+    if (job.priority === "high") {
+      this.queue.enqueueFront(job);
       console.log(
-        `🔴 [PRIORIDAD] ${trabajo.estudiante} → "${trabajo.documento}" ` +
-        `(${trabajo.paginas} pág.) insertado al FRENTE de la cola`
+        `🔴 [PRIORITY] ${job.student} → "${job.document}" ` +
+        `(${job.pages} pg.) inserted at the FRONT of the queue`
       );
     } else {
-      this.cola.encolar(trabajo);
+      this.queue.enqueue(job);
       console.log(
-        `📄 [RECIBIDO]  ${trabajo.estudiante} → "${trabajo.documento}" ` +
-        `(${trabajo.paginas} pág.) agregado a la cola | posición: ${this.cola.tamanio}`
+        `📄 [RECEIVED] ${job.student} → "${job.document}" ` +
+        `(${job.pages} pg.) added to the queue | position: ${this.queue.size}`
       );
     }
 
-    this.historial.push(trabajo);
-    return trabajo;
+    this.history.push(job);
+    return job;
   }
 
   /**
-   * Procesa todos los trabajos en la cola uno a uno.
-   * Simula el tiempo de impresión según la cantidad de páginas.
+   * Processes all jobs in the queue one by one.
+   * Simulates print time based on the number of pages.
    */
-  async procesarCola(): Promise<void> {
+  async processQueue(): Promise<void> {
     console.log("\n🖨️  ══════════════════════════════════════════════");
-    console.log("    IMPRESORA LISTA — Comenzando a procesar cola");
+    console.log("    PRINTER READY — Starting to process queue");
     console.log("    ══════════════════════════════════════════════\n");
 
-    while (!this.cola.estaVacia) {
-      const trabajo = this.cola.desencolar()!;
+    while (!this.queue.isEmpty) {
+      const job = this.queue.dequeue()!;
 
-      // Mostrar quién sigue en la fila
-      this.mostrarColaActual();
+      // Show who is next in line
+      this.showCurrentQueue();
 
-      // Cambiar estado a imprimiendo
-      trabajo.estado = "imprimiendo";
+      // Change status to printing
+      job.status = "printing";
       console.log(
-        `\n⚙️  [IMPRIMIENDO] ${trabajo.id} | ${trabajo.estudiante} | ` +
-        `"${trabajo.documento}" | ${trabajo.paginas} página(s)...`
+        `\n⚙️  [PRINTING] ${job.id} | ${job.student} | ` +
+        `"${job.document}" | ${job.pages} page(s)...`
       );
 
-      // Simular tiempo de impresión (500ms por página)
-      const tiempoTotal = trabajo.paginas * this.MS_POR_PAGINA;
-      await esperar(tiempoTotal);
+      // Simulate print time (500ms per page)
+      const totalTime = job.pages * this.MS_PER_PAGE;
+      await wait(totalTime);
 
-      // Trabajo completado
-      trabajo.estado = "completado";
-      trabajo.tiempoImpresionMs = tiempoTotal;
+      // Job completed
+      job.status = "completed";
+      job.printTimeMs = totalTime;
 
       console.log(
-        `✅ [LISTO]       ${trabajo.id} | ${trabajo.estudiante} recoge ` +
-        `su impresión (${tiempoTotal / 1000}s) ✓`
+        `✅ [DONE]      ${job.id} | ${job.student} picks up ` +
+        `their printout (${totalTime / 1000}s) ✓`
       );
     }
 
-    console.log("\n🏁 Cola vacía. Todos los documentos fueron impresos.\n");
+    console.log("\n🏁 Queue empty. All documents have been printed.\n");
   }
 
   /**
-   * Muestra visualmente quién está esperando en la cola.
+   * Displays who is currently waiting in the queue.
    */
-  private mostrarColaActual(): void {
-    const enEspera = this.cola.aArreglo();
-    if (enEspera.length === 0) {
-      console.log("   📭 Cola: vacía (este es el último trabajo)");
+  private showCurrentQueue(): void {
+    const waiting = this.queue.toArray();
+    if (waiting.length === 0) {
+      console.log("   📭 Queue: empty (this is the last job)");
       return;
     }
-    const nombres = enEspera.map((t, i) => `${i + 1}.${t.estudiante}`).join("  →  ");
-    console.log(`   📋 En espera: ${nombres}`);
+    const names = waiting.map((j, i) => `${i + 1}.${j.student}`).join("  →  ");
+    console.log(`   📋 Waiting: ${names}`);
   }
 
   /**
-   * Retorna las estadísticas de la sesión de impresión.
+   * Returns the statistics for the print session.
    */
-  obtenerEstadisticas(): EstadisticasSesion {
-    const completados = this.historial.filter(t => t.estado === "completado");
-    const paginasTotales = this.historial.reduce((acc, t) => acc + t.paginas, 0);
-    const tiempos = completados
-      .filter(t => t.tiempoImpresionMs !== undefined)
-      .map(t => t.tiempoImpresionMs!);
-    const tiempoPromedio =
-      tiempos.length > 0
-        ? Math.round(tiempos.reduce((a, b) => a + b, 0) / tiempos.length)
+  getStats(): SessionStats {
+    const completed = this.history.filter(j => j.status === "completed");
+    const totalPages = this.history.reduce((acc, j) => acc + j.pages, 0);
+    const times = completed
+      .filter(j => j.printTimeMs !== undefined)
+      .map(j => j.printTimeMs!);
+    const averageTime =
+      times.length > 0
+        ? Math.round(times.reduce((a, b) => a + b, 0) / times.length)
         : 0;
 
     return {
-      totalTrabajos: this.historial.length,
-      completados: completados.length,
-      paginasTotales,
-      tiempoPromedioMs: tiempoPromedio,
-      ordenDeAtencion: completados.map(t => t.estudiante),
+      totalJobs: this.history.length,
+      completed: completed.length,
+      totalPages,
+      averageTimeMs: averageTime,
+      attendanceOrder: completed.map(j => j.student),
     };
   }
 
   /**
-   * Muestra el historial completo de trabajos.
+   * Displays the full job history.
    */
-  mostrarHistorial(): void {
+  printHistory(): void {
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("                  HISTORIAL DE IMPRESIÓN                   ");
+    console.log("                    PRINT JOB HISTORY                      ");
     console.log("═══════════════════════════════════════════════════════════");
     console.log(
-      " #   | Estudiante       | Documento                | Pág | Tiempo  | Estado"
+      " #   | Student          | Document                 | Pg  | Time    | Status"
     );
     console.log("─────────────────────────────────────────────────────────────");
 
-    for (const trabajo of this.historial) {
-      const icono =
-        trabajo.estado === "completado" ? "✅" :
-        trabajo.estado === "imprimiendo" ? "⚙️ " : "⏳";
-      const tiempo = trabajo.tiempoImpresionMs
-        ? `${trabajo.tiempoImpresionMs / 1000}s`
+    for (const job of this.history) {
+      const icon =
+        job.status === "completed" ? "✅" :
+        job.status === "printing"  ? "⚙️ " : "⏳";
+      const time = job.printTimeMs
+        ? `${job.printTimeMs / 1000}s`
         : "—";
       console.log(
-        ` ${trabajo.id} | ${trabajo.estudiante.padEnd(16)} | ` +
-        `${trabajo.documento.padEnd(24)} | ${String(trabajo.paginas).padStart(3)} | ` +
-        `${tiempo.padEnd(7)} | ${icono} ${trabajo.estado}`
+        ` ${job.id} | ${job.student.padEnd(16)} | ` +
+        `${job.document.padEnd(24)} | ${String(job.pages).padStart(3)} | ` +
+        `${time.padEnd(7)} | ${icon} ${job.status}`
       );
     }
     console.log("═══════════════════════════════════════════════════════════\n");
@@ -293,121 +293,121 @@ class SpoolerImpresion {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  UTILIDAD
+//  UTILITY
 // ─────────────────────────────────────────────────────────────
 
-function esperar(ms: number): Promise<void> {
+function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ─────────────────────────────────────────────────────────────
-//  SIMULACIÓN — Escenario del salón de clases
+//  SIMULATION — Classroom scenario
 // ─────────────────────────────────────────────────────────────
 
-async function simularSalonDeClases(): Promise<void> {
+async function simulateClassroom(): Promise<void> {
   console.log("╔══════════════════════════════════════════════════════════╗");
-  console.log("║     COLA DE IMPRESIÓN — Salón de Clases                  ║");
-  console.log("║     8 estudiantes · 1 impresora · Día de entrega         ║");
+  console.log("║     PRINT QUEUE — Classroom                              ║");
+  console.log("║     8 students · 1 printer · Submission day              ║");
   console.log("╚══════════════════════════════════════════════════════════╝\n");
 
-  const spooler = new SpoolerImpresion();
+  const spooler = new PrintSpooler();
 
-  // ── Los 8 estudiantes envían sus documentos casi al mismo tiempo
-  console.log("📢 El profesor anuncia: '15 minutos para entregar impreso'\n");
-  console.log("── Estudiantes enviando documentos a imprimir... ──────────\n");
+  // ── The 8 students send their documents almost simultaneously
+  console.log("📢 Teacher announces: '15 minutes to submit printed copy'\n");
+  console.log("── Students sending documents to print... ─────────────────\n");
 
-  spooler.enviarAImprimir({
-    estudiante: "Valentina",
-    documento: "Taller_POO.pdf",
-    paginas: 3,
-    prioridad: "normal",
-    horaEnvio: "08:01",
+  spooler.sendToPrint({
+    student: "Valentina",
+    document: "OOP_Workshop.pdf",
+    pages: 3,
+    priority: "normal",
+    sentAt: "08:01",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Camilo",
-    documento: "Informe_BD.pdf",
-    paginas: 5,
-    prioridad: "normal",
-    horaEnvio: "08:01",
+  spooler.sendToPrint({
+    student: "Camilo",
+    document: "DB_Report.pdf",
+    pages: 5,
+    priority: "normal",
+    sentAt: "08:01",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Lucía",
-    documento: "Diagrama_UML.pdf",
-    paginas: 1,
-    prioridad: "normal",
-    horaEnvio: "08:02",
+  spooler.sendToPrint({
+    student: "Lucía",
+    document: "UML_Diagram.pdf",
+    pages: 1,
+    priority: "normal",
+    sentAt: "08:02",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Andrés",
-    documento: "Proyecto_Final.pdf",
-    paginas: 8,
-    prioridad: "normal",
-    horaEnvio: "08:02",
+  spooler.sendToPrint({
+    student: "Andrés",
+    document: "Final_Project.pdf",
+    pages: 8,
+    priority: "normal",
+    sentAt: "08:02",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Sara",
-    documento: "Resumen_Redes.pdf",
-    paginas: 2,
-    prioridad: "normal",
-    horaEnvio: "08:03",
+  spooler.sendToPrint({
+    student: "Sara",
+    document: "Networks_Summary.pdf",
+    pages: 2,
+    priority: "normal",
+    sentAt: "08:03",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Miguel",
-    documento: "Ejercicios_Algo.pdf",
-    paginas: 4,
-    prioridad: "normal",
-    horaEnvio: "08:03",
+  spooler.sendToPrint({
+    student: "Miguel",
+    document: "Algorithms_Exercises.pdf",
+    pages: 4,
+    priority: "normal",
+    sentAt: "08:03",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Daniela",
-    documento: "Casos_de_Uso.pdf",
-    paginas: 6,
-    prioridad: "normal",
-    horaEnvio: "08:04",
+  spooler.sendToPrint({
+    student: "Daniela",
+    document: "Use_Cases.pdf",
+    pages: 6,
+    priority: "normal",
+    sentAt: "08:04",
   });
 
-  spooler.enviarAImprimir({
-    estudiante: "Felipe",
-    documento: "Mapa_Conceptual.pdf",
-    paginas: 2,
-    prioridad: "normal",
-    horaEnvio: "08:04",
+  spooler.sendToPrint({
+    student: "Felipe",
+    document: "Concept_Map.pdf",
+    pages: 2,
+    priority: "normal",
+    sentAt: "08:04",
   });
 
-  // ── El profesor necesita imprimir con prioridad
-  console.log("\n── El profesor interviene con prioridad alta ───────────────\n");
+  // ── The teacher needs to print with high priority
+  console.log("\n── Teacher intervenes with high priority ───────────────────\n");
 
-  spooler.enviarAImprimir({
-    estudiante: "Profesor García",
-    documento: "Lista_Calificaciones.pdf",
-    paginas: 1,
-    prioridad: "alta",
-    horaEnvio: "08:05",
+  spooler.sendToPrint({
+    student: "Teacher García",
+    document: "Grades_List.pdf",
+    pages: 1,
+    priority: "high",
+    sentAt: "08:05",
   });
 
-  // ── Procesar toda la cola
-  await spooler.procesarCola();
+  // ── Process the entire queue
+  await spooler.processQueue();
 
-  // ── Mostrar resultados
-  spooler.mostrarHistorial();
+  // ── Show results
+  spooler.printHistory();
 
-  const stats = spooler.obtenerEstadisticas();
-  console.log("════════════════════ ESTADÍSTICAS DE LA SESIÓN ════════════");
-  console.log(`  Total de trabajos enviados : ${stats.totalTrabajos}`);
-  console.log(`  Documentos completados     : ${stats.completados}`);
-  console.log(`  Total de páginas impresas  : ${stats.paginasTotales}`);
-  console.log(`  Tiempo promedio por trabajo: ${stats.tiempoPromedioMs / 1000}s`);
-  console.log(`\n  Orden en que recogieron su impresión:`);
-  stats.ordenDeAtencion.forEach((nombre, i) => {
-    console.log(`    ${i + 1}. ${nombre}`);
+  const stats = spooler.getStats();
+  console.log("════════════════════ SESSION STATISTICS ═══════════════════");
+  console.log(`  Total jobs sent         : ${stats.totalJobs}`);
+  console.log(`  Completed documents     : ${stats.completed}`);
+  console.log(`  Total pages printed     : ${stats.totalPages}`);
+  console.log(`  Average time per job    : ${stats.averageTimeMs / 1000}s`);
+  console.log(`\n  Order in which students picked up their printout:`);
+  stats.attendanceOrder.forEach((name, i) => {
+    console.log(`    ${i + 1}. ${name}`);
   });
   console.log("════════════════════════════════════════════════════════════\n");
 }
 
-simularSalonDeClases();
+simulateClassroom();
